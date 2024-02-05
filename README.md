@@ -1,11 +1,9 @@
-Functional-Input Gaussian Processes with Applications to Inverse
-Scattering Problems (Reproducibility)
+Advancing Inverse Scattering with Surrogate Modeling and Bayesian
+Inference for Functional Inputs (Reproducibility)
 ================
 
-This instruction aims to reproduce the results in the paper “*Advancing
-Inverse Scattering with Surrogate Modeling and Bayesian Inference for
-Functional Inputs*”. Hereafter, functional-Input Gaussian Process is
-abbreviated by *FIGP*.
+This instruction aims to reproduce the results in the paper
+“[Advancing Inverse Scattering with Surrogate Modeling and Bayesian Inference for Functional Inputs](https://arxiv.org/abs/2305.01188)”.
 
 The following results are reproduced in this file
 
