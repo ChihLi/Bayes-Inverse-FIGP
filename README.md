@@ -21,6 +21,8 @@ The code to reproduce the results for the numerical study in Section 4.3
 (Figure 4) is provided separately and will be briefly described at the
 end of this instruction.
 
+Please note that the results may differ slightly from those in the paper due to RMarkdown builds being sensitive to random variations.
+
 ##### Step 0.1: load functions and packages
 
 ``` r
