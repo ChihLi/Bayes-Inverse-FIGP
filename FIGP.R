@@ -2,7 +2,8 @@ FIGP <- function(G, d, y, nu, nug,
                  kernel=c("linear", "nonlinear")[1],
                  theta.init=ifelse(kernel=="linear", 0.01, 1),
                  theta.lower=ifelse(kernel=="linear", 1e-6, 1e-2),
-                 theta.upper=ifelse(kernel=="linear", 0.1, 100)){
+                 theta.upper=ifelse(kernel=="linear", 0.1, 100),
+                 rnd = 5000){
   
   n <- length(y)
   nlsep <- function(par, G, d, Y, rnd) 
@@ -11,7 +12,7 @@ FIGP <- function(G, d, y, nu, nug,
     
     n <- length(Y)
     
-    K <- FIGP.kernel(d, theta, nu, G, kernel=kernel)
+    K <- FIGP.kernel(d, theta, nu, G, kernel=kernel, rnd = rnd)
     Ki <- solve(K+diag(nug,n))
     ldetK <- determinant(K+diag(nug,n), logarithm=TRUE)$modulus
     
@@ -35,13 +36,13 @@ FIGP <- function(G, d, y, nu, nug,
   }
   toc <- proc.time()[3]
   
-  K <- FIGP.kernel(d, theta, nu, G, kernel=kernel)
+  K <- FIGP.kernel(d, theta, nu, G, kernel=kernel, rnd = rnd)
   Ki <- solve(K+diag(nug,n))
   one.vec <- matrix(1,ncol=1,nrow=n)
   mu.hat <- drop((t(one.vec)%*%Ki%*%y)/(t(one.vec)%*%Ki%*%one.vec))
   
   return(list(theta = theta, nu=nu, Ki=Ki, d=d, kernel=kernel, ElapsedTime=toc-tic, 
-              nug = nug, G = G, y = y, mu.hat = mu.hat))
+              nug = nug, G = G, y = y, mu.hat = mu.hat, rnd = rnd))
 }
 
 pred.FIGP <- function(fit, gnew, sig2.fg=TRUE){
@@ -55,12 +56,13 @@ pred.FIGP <- function(fit, gnew, sig2.fg=TRUE){
   d <- fit$d
   mu.hat <- fit$mu.hat
   kernel <- fit$kernel
+  rnd <- fit$rnd
   
   n <- length(y)
   n.new <- length(gnew)
   
-  KX <- FIGP.kernel(d, theta, nu, G, gnew, kernel=kernel)
-  KXX <- FIGP.kernel(d, theta, nu, gnew, kernel=kernel)
+  KX <- FIGP.kernel(d, theta, nu, G, gnew, kernel=kernel, rnd = rnd)
+  KXX <- FIGP.kernel(d, theta, nu, gnew, kernel=kernel, rnd = rnd)
   
   mup2 <- drop(mu.hat + KX %*% Ki %*% (y - mu.hat))
   if(sig2.fg){

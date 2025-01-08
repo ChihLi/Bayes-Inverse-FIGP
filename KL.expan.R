@@ -14,7 +14,7 @@ KLGP.fit <- function(d, Ys, G, U, fraction=0.99, rnd=1e3, XN=NULL){
 }
 
 ys_hat.KL <- function(klgp=NULL, B.new, basis, U, 
-                      emulator=c("figp","klgp")[2], figp=NULL, XN=NULL){
+                      emulator=c("figp","klgp")[2], figp=NULL, XN=NULL, Ki=NULL){
   
   B.new <- matrix(B.new, nrow=1)
   gN <- basis %*% t(B.new)
@@ -31,7 +31,7 @@ ys_hat.KL <- function(klgp=NULL, B.new, basis, U,
       ynew[,i] <- drop(pred.out$mu)
       s2new[,i] <- drop(pred.out$sig2)
     }else{
-      pred.out <- pred.FIGP.XN(figp[[i]], gN, XN)
+      pred.out <- pred.FIGP.XN(figp[[i]], gN, XN, Ki[[i]])
       ynew[,i] <- pred.out$mu
       s2new[,i] <- pred.out$sig2
     }

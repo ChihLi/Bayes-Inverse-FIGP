@@ -1,6 +1,10 @@
 # pdf of inverse gamma
-dinvgamma <- function(x, alpha, beta) {
-  beta^alpha / gamma(alpha) * x^(-alpha-1) * exp(-beta/x)
+dinvgamma <- function(x, alpha, beta, log = FALSE) {
+  if(log){
+    alpha * log(beta) - lgamma(alpha) - (alpha + 1) * log(x) - (beta / x)
+  }else{
+    beta^alpha / gamma(alpha) * x^(-alpha-1) * exp(-beta/x)
+  }
 }
 
 # log likelihood of gN

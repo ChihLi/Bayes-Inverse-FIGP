@@ -1,7 +1,10 @@
 ##### predict the scores using FIGP model with the discrete input XN
-pred.FIGP.XN <- function(fit, gN, XN){
+pred.FIGP.XN <- function(fit, gN, XN, Ki=NULL){
   
-  Ki <- fit$Ki
+  # if Ki=NULL, then Ki <- fit$Ki
+  # that means the low-discrepancy sequences used in 
+  # model fitting and inverse are the same
+  if(is.null(Ki))   Ki <- fit$Ki
   theta <- fit$theta
   nu <- fit$nu
   nug <- fit$nug
@@ -17,8 +20,6 @@ pred.FIGP.XN <- function(fit, gN, XN){
   A <- matrix(0,ncol=n,nrow=rnd)
   for(i in 1:n)  A[,i] <- apply(XN, 1, G[[i]])
   
-  K <- FIGP.kernel.discrete(theta, nu, G, gN=NULL, XN, kernel)
-  Ki <- solve(K+diag(nug,n))
   KX <- FIGP.kernel.discrete(theta, nu, G, gN=gN, XN, kernel)
   KXX <- FIGP.kernel.discrete(theta, nu, G=NULL, gN=gN, XN, kernel) 
   
@@ -50,7 +51,7 @@ pred.FIGP.XN <- function(fit, gN, XN){
   
   mup2 <- drop(mu.hat + KX %*% Ki %*% (y - mu.hat))
   tau2hat <- drop(t(y - mu.hat) %*% Ki %*% (y - mu.hat) / n)
-  Sigmap2 <- pmax(0,diag(tau2hat*(KXX + nug - KX %*% Ki %*% t(KX))))
+  Sigmap2 <- pmax(nug,diag(tau2hat*(KXX + nug - KX %*% Ki %*% t(KX))))
   
   return(list(mu=mup2, sig2=Sigmap2))
 }
@@ -64,7 +65,7 @@ MF.FIGP <- function(G, d, y1, y2, nu, nug,
                      theta.upper=ifelse(kernel=="linear", 0.1, 100),
                      rho.init=0.5,
                      rho.lower=0,
-                     rho.upper=2){
+                     rho.upper=2, rnd = 5000){
   
   n <- length(y1)
   nlsep <- function(par, G, d, Y1, Y2) 
@@ -75,7 +76,7 @@ MF.FIGP <- function(G, d, y1, y2, nu, nug,
     
     n <- length(Y1)
     
-    K <- FIGP.kernel(d, theta, nu, G, kernel=kernel)
+    K <- FIGP.kernel(d, theta, nu, G, kernel=kernel, rnd=rnd)
     Ki <- solve(K+diag(nug,n))
     ldetK <- determinant(K+diag(nug,n), logarithm=TRUE)$modulus
     
@@ -106,7 +107,7 @@ MF.FIGP <- function(G, d, y1, y2, nu, nug,
   toc <- proc.time()[3]
   
   y <- y1 - rho*y2
-  K <- FIGP.kernel(d, theta, nu, G, kernel=kernel)
+  K <- FIGP.kernel(d, theta, nu, G, kernel=kernel, rnd=rnd)
   Ki <- solve(K+diag(nug,n))
   one.vec <- matrix(1,ncol=1,nrow=n)
   mu.hat <- drop((t(one.vec)%*%Ki%*%y)/(t(one.vec)%*%Ki%*%one.vec))
@@ -116,7 +117,7 @@ MF.FIGP <- function(G, d, y1, y2, nu, nug,
 }
 
 ##### predict with linear kernel using discrete g #####
-pred.MF <- function(fit1, fit2, gN, XN){
+pred.MF <- function(fit1, fit2, gN, XN, recursive=FALSE){
   
   # info of fit1
   Ki.1 <- fit1$Ki
@@ -138,48 +139,75 @@ pred.MF <- function(fit1, fit2, gN, XN){
   kernel.2 <- fit2$kernel
   
   n <- length(G)
-  y <- c(y.1, rho*y.1 + y.2)
-  mu.hat <- c(rep(mu.hat.1, n), rep(rho*mu.hat.1 + mu.hat.2, n))
-  mu <- rho*mu.hat.1 + mu.hat.2
   
-  Kh <- FIGP.kernel.discrete(theta.1, nu, G, gN=NULL, XN, kernel.1)
-  Kd <- FIGP.kernel.discrete(theta.2, nu, G, gN=NULL, XN, kernel.2)
-  
-  # compute linear kernel
-  # rnd <- nrow(XN)
-  # R.1 <- sqrt(distance(t(t(XN)/theta.1)))
-  # Phi.1 <- matern.kernel(R.1, nu=nu)
-  # R.2 <- sqrt(distance(t(t(XN)/theta.2)))
-  # Phi.2 <- matern.kernel(R.2, nu=nu)
-  # 
-  # A <- matrix(0,ncol=n,nrow=rnd)
-  # for(i in 1:n)  A[,i] <- apply(XN, 1, G[[i]])
-  # Kh <- (t(A) %*% Phi.1 %*% A) / rnd # should be /rnd^2 but the values become too small, but it doesn't hurt without it because of scale parameter
-  # Kh <- (Kh+t(Kh))/2
-  # Kd <- (t(A) %*% Phi.2 %*% A) / rnd # should be /rnd^2 but the values become too small, but it doesn't hurt without it because of scale parameter
-  # Kd <- (Kd+t(Kd))/2
-  K1 <- cbind(Kh, rho*Kh)
-  K2 <- cbind(rho*Kh, rho^2*Kh + Kd)
-  K <- rbind(K1, K2)
-  Ki <- solve(K+diag(nug,2*n))
-  
-  # a <- matrix(0,ncol=1,nrow=rnd)
-  # a[,1] <- gN
-  # KhX <- (t(a) %*% Phi.1 %*% A) / rnd 
-  # KdX <- (t(a) %*% Phi.2 %*% A) / rnd 
-  # KhXX <- (t(a) %*% Phi.1 %*% a) / rnd 
-  # KdXX <- (t(a) %*% Phi.2 %*% a) / rnd 
-  
-  KhX <- FIGP.kernel.discrete(theta.1, nu, G, gN=gN, XN, kernel.1)
-  KdX <- FIGP.kernel.discrete(theta.2, nu, G, gN=gN, XN, kernel.2)
-  KhXX <- FIGP.kernel.discrete(theta.1, nu, G=NULL, gN=gN, XN, kernel.1)
-  KdXX <- FIGP.kernel.discrete(theta.2, nu, G=NULL, gN=gN, XN, kernel.2)
+  if(recursive){
+    y <- c(y.1, rho*y.1 + y.2)
+    mu.hat <- c(rep(mu.hat.1, n), rep(rho*mu.hat.1 + mu.hat.2, n))
+    mu <- rho*mu.hat.1 + mu.hat.2
     
-  KX <- cbind(rho*KhX, rho^2*KhX + KdX)
-  KXX <- rho^2*KhXX + KdXX
+    Kh <- FIGP.kernel.discrete(theta.1, nu, G, gN=NULL, XN, kernel.1)
+    Kd <- FIGP.kernel.discrete(theta.2, nu, G, gN=NULL, XN, kernel.2)
+    
+    KhX <- FIGP.kernel.discrete(theta.1, nu, G, gN=gN, XN, kernel.1)
+    KdX <- FIGP.kernel.discrete(theta.2, nu, G, gN=gN, XN, kernel.2)
+    KhXX <- FIGP.kernel.discrete(theta.1, nu, G=NULL, gN=gN, XN, kernel.1)
+    KdXX <- FIGP.kernel.discrete(theta.2, nu, G=NULL, gN=gN, XN, kernel.2)
+
+    mup1 <- drop(mu.hat.1 + KhX %*% Ki.1 %*% (y.1 - mu.hat.1))
+    tau2hat1 <- drop(t(y.1 - mu.hat.1) %*% Ki.1 %*% (y.1 - mu.hat.1) / n)
+    Sigmap1 <- pmax(0,tau2hat1*diag(KhXX + diag(nug, 1) - KhX %*% Ki.1 %*% t(KhX)))
+    
+    mup2 <- drop(rho*mup1 + mu.hat.2 + KdX %*% Ki.2 %*% (y.2 - rho*y.1 - mu.hat.2))
+    tau2hat2 <- drop(t(y.2 - rho*y.1 - mu.hat.2) %*% Ki.2 %*% (y.2 - rho*y.1 - mu.hat.2) / n)
+    Sigmap2 <- pmax(nug, rho^2*Sigmap1 + tau2hat2*diag(KdXX + diag(nug, 1) - KdX %*% Ki.2 %*% t(KdX)))
+    
+  }else{
+    y <- c(y.1, rho*y.1 + y.2)
+    mu.hat <- c(rep(mu.hat.1, n), rep(rho*mu.hat.1 + mu.hat.2, n))
+    mu <- rho*mu.hat.1 + mu.hat.2
+    
+    Kh <- FIGP.kernel.discrete(theta.1, nu, G, gN=NULL, XN, kernel.1)
+    Kd <- FIGP.kernel.discrete(theta.2, nu, G, gN=NULL, XN, kernel.2)
+    
+    # compute linear kernel
+    # rnd <- nrow(XN)
+    # R.1 <- sqrt(distance(t(t(XN)/theta.1)))
+    # Phi.1 <- matern.kernel(R.1, nu=nu)
+    # R.2 <- sqrt(distance(t(t(XN)/theta.2)))
+    # Phi.2 <- matern.kernel(R.2, nu=nu)
+    # 
+    # A <- matrix(0,ncol=n,nrow=rnd)
+    # for(i in 1:n)  A[,i] <- apply(XN, 1, G[[i]])
+    # Kh <- (t(A) %*% Phi.1 %*% A) / rnd # should be /rnd^2 but the values become too small, but it doesn't hurt without it because of scale parameter
+    # Kh <- (Kh+t(Kh))/2
+    # Kd <- (t(A) %*% Phi.2 %*% A) / rnd # should be /rnd^2 but the values become too small, but it doesn't hurt without it because of scale parameter
+    # Kd <- (Kd+t(Kd))/2
+    K1 <- cbind(Kh, rho*Kh)
+    K2 <- cbind(rho*Kh, rho^2*Kh + Kd)
+    K <- rbind(K1, K2)
+    Ki <- solve(K+diag(nug,2*n))
+    
+    # a <- matrix(0,ncol=1,nrow=rnd)
+    # a[,1] <- gN
+    # KhX <- (t(a) %*% Phi.1 %*% A) / rnd 
+    # KdX <- (t(a) %*% Phi.2 %*% A) / rnd 
+    # KhXX <- (t(a) %*% Phi.1 %*% a) / rnd 
+    # KdXX <- (t(a) %*% Phi.2 %*% a) / rnd 
+    
+    KhX <- FIGP.kernel.discrete(theta.1, nu, G, gN=gN, XN, kernel.1)
+    KdX <- FIGP.kernel.discrete(theta.2, nu, G, gN=gN, XN, kernel.2)
+    KhXX <- FIGP.kernel.discrete(theta.1, nu, G=NULL, gN=gN, XN, kernel.1)
+    KdXX <- FIGP.kernel.discrete(theta.2, nu, G=NULL, gN=gN, XN, kernel.2)
+    
+    KX <- cbind(rho*KhX, rho^2*KhX + KdX)
+    KXX <- rho^2*KhXX + KdXX
+    
+    mup2 <- drop(mu + KX %*% Ki %*% (y - mu.hat))
+    tau2hat <- drop(t(y - mu.hat) %*% Ki %*% (y - mu.hat) / (2*n))
+    Sigmap2 <- pmax(nug,tau2hat*diag(KXX + diag(nug, 1) - KX %*% Ki %*% t(KX)))
+    
+  }
   
-  mup2 <- drop(mu + KX %*% Ki %*% (y - mu.hat))
-  Sigmap2 <- pmax(0,diag(KXX + diag(nug, 1) - KX %*% Ki %*% t(KX)))
   
   return(list(mu=mup2, sig2=Sigmap2))
 }

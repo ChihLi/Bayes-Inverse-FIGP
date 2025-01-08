@@ -1,14 +1,14 @@
-FIGP.kernel <- function(d, theta, nu, G, g=NULL, kernel, ...){
+FIGP.kernel <- function(d, theta, nu, G, g=NULL, kernel, rnd=5000, ...){
   if(kernel=="linear"){
     # hcubature could take a long time to converge (for some reasons)
-    return(FIGP.kernel.linear(d, theta, nu, G, g, MC.fg=TRUE, rnd=5000, ...)) 
+    return(FIGP.kernel.linear(d, theta, nu, G, g, MC.fg=TRUE, rnd=rnd, ...)) 
   }else{
     # hcubature is stable for nonlinear cases
-    return(FIGP.kernel.nonlinear(d, theta, nu, G, g, MC.fg=TRUE, rnd=5000, ...))
+    return(FIGP.kernel.nonlinear(d, theta, nu, G, g, MC.fg=TRUE, rnd=rnd, ...))
   }
 }
 
-FIGP.kernel.linear <- function(d, theta, nu, G, g=NULL, MC.fg=FALSE, rnd=1e3, ...){
+FIGP.kernel.linear <- function(d, theta, nu, G, g=NULL, MC.fg=FALSE, rnd=5000, ...){
   
   n <- length(G)
   if(!is.null(g)) n.new <- length(g)

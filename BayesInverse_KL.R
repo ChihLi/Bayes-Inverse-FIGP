@@ -5,7 +5,7 @@ logl.B <- function(eta, tau2, X, B, basis, nu, nug)
   R <- sqrt(distance(t(t(X)/eta)))
   K <- matern.kernel(R, nu=nu)
   E <- t(basis) %*% K %*% basis
- 
+  
   Ei <- solve(E+diag(nug,n))
   ldetE <- determinant(E, logarithm=TRUE)$modulus
   
@@ -13,19 +13,42 @@ logl.B <- function(eta, tau2, X, B, basis, nu, nug)
   return(ll)
 }
 
+
+
 # posterior of g and ys given yp
-BayesInverse_KL <- function(klgp, XN, X.grid, yp, U, fraction=0.95, emulator=c("figp","klgp")[2], figp=NULL,
+BayesInverse_KL <- function(klgp, XN, X.grid, yp, U, 
+                            fraction=0.95, emulator=c("figp","klgp")[2], figp=NULL,
                             nu=2.5, nug=sqrt(.Machine$double.eps),
-                            MC.samples=1e4, MC.burnin=5000, plot.fg=FALSE,
-                            prior=list(prior.tau2.shape=1, prior.tau2.rate=0.2,
-                                       prior.s2.shape=1, prior.s2.rate=1e-5,
-                                       prior.eta.shape=1, prior.eta.rate=0.2),
-                            init=list(eta=c(5,5), tau2=0.2, s2=1e-5), 
-                            MH.const=list(cGP=0.5, cs2=0.5, ceta=c(0.5,0.5)),
-                            seed=NULL, trace=TRUE){
+                            MC.samples = 1e4, MC.burnin = 5000, nchain = 5, 
+                            prior=list(prior.tau2.shape=4, prior.tau2.rate=1,
+                                       prior.s2.shape=100, prior.s2.rate=1e-4,
+                                       prior.eta.shape=1.5, prior.eta.rate=3.9/1.5),
+                            seed=NULL, parallel=TRUE, ncores=detectCores()-1){
+  
+  ##################################################################################################
+  # klgp:        if `emulator` is `klgp`, GP emulator based on KL expansion
+  # XN:          the input for the gN realization
+  # X.grid:      discretized angles a1 (incident wave) and a2 (scattered wave)
+  # yp:          output yp
+  # U:           PC of y
+  # fraction:    determine how many components of KL expansion for estimating g inverse
+  # emulator:    "figp" or "klgp" indicates FIGP emulator or KLGP emulator
+  # nu:          smoothness parameter of matern kernel
+  # nug:         nugget for numerical stability
+  # figp:        if `emulator` = "figp", FIGP emulator for computer model
+  # MC.samples:  number of Monte-Carlo samples
+  # MC.burnin:   number of initial burn-in Monte-Carlo samples
+  # nchain:      number of chains of MCMC sampling; each one runs different initial parameters
+  # prior:       priors for the parameters 
+  # seed:        select seed number for reproducibility; if not; select `NULL`
+  # parallel:    do parallel for `nchain`
+  # ncores:      number of cores for palatalization
+  #################################################################################################
+  
   
   # vector size
   n.grid <- nrow(X.grid)
+  d <- ncol(X.grid)
   N <- nrow(XN)
   m <- length(yp)
   
@@ -34,157 +57,338 @@ BayesInverse_KL <- function(klgp, XN, X.grid, yp, U, fraction=0.95, emulator=c("
     assign(name, prior[[name]])
   }
   
-  # init
-  for (name in names(init)) {
-    assign(name, init[[name]])
+  
+  # save Ki for computational ease
+  if(emulator == "figp"){
+    Ki <- vector("list",ncol(U))
+    for(i in 1:ncol(U)){
+      K <- FIGP.kernel.discrete(figp[[i]]$theta, figp[[i]]$nu, figp[[i]]$G, gN=NULL, XN, figp[[i]]$kernel)
+      Ki[[i]] <- solve(K+diag(figp[[i]]$nug, length(figp[[i]]$y)))
+    }  
+  }else {
+    Ki <- NULL
   }
   
-  # MH constants
-  for (name in names(MH.const)) {
-    assign(name, MH.const[[name]])
-  }
   
-  # set up
-  acceptCount.g <- acceptCount.s2 <- 0
-  acceptCount.eta <- c(0,0)
-  g.sample <- matrix(0, nrow=n.grid, ncol=MC.samples)
-  yhat <- matrix(0, nrow=m, ncol=MC.samples)
   
-  if(!is.null(seed)){
-    set.seed(seed)
-  }
-  
-  S <- 0
-  for(i in 1:1000){
-    eta <- rgamma(2, shape = prior.eta.shape, rate = prior.eta.rate)
-    R <- sqrt(distance(t(t(XN)/eta)))
-    S <- S + matern.kernel(R, nu=nu)/1000
-  }
-  eig.out <- eigen(S)
-  M <- which(cumsum(eig.out$value)/sum(eig.out$value)>fraction)[1]
-  B <- rep(0,M)
-  basis <- eig.out$vectors[,1:M]
-
-  yU <- yp %*% U
-  pred.out <- ys_hat.KL(klgp=klgp, B.new=B, basis=basis, U=U, emulator=emulator, figp=figp, XN=XN)
-  dU <- yU - pred.out$ynew
-  
-  R <- sqrt(distance(t(t(XN)/eta)))
-  K <- matern.kernel(R, nu=nu)
-  E <- t(basis) %*% K %*% basis
- 
-  if(trace)  pb <- txtProgressBar(min = 0, max = MC.samples, initial = 0, style=3) 
-  
-  if(!is.null(seed)){
-    set.seed(seed)
-  }
-  
-  ##### MCMC sampling #####
-  for(ii in 1:MC.samples){
+  if(parallel){
     
-    if(trace)  setTxtProgressBar(pb, ii)
+    # Parallel setup
+    no_cores <- min(nchain, ncores)  # Detect available cores
+    cl <- makeCluster(no_cores)     # Create cluster
     
-    # sample gN: MH
-    B.new <- cGP*sqrt(tau2)*t(chol(E+diag(nug,M))) %*% rnorm(M) + B
-    pred.out.new <- ys_hat.KL(klgp=klgp, B.new=B.new, basis=basis, U=U, emulator=emulator, figp=figp, XN=XN)
-    dU.new <- yU - pred.out.new$ynew
-    
-    logL <- logl.Yp(pred.out, s2, dU, yp) + logl.B(eta, tau2, XN, B, basis, nu, nug)
-    logL.new <- logl.Yp(pred.out.new, s2, dU.new, yp) + logl.B(eta, tau2, XN, B.new, basis, nu, nug)
-    
-    if(runif(1) <= exp(logL.new - logL)){
-      B <- B.new
-      dU <- dU.new
-      pred.out <- pred.out.new
-      acceptCount.g <- acceptCount.g + 1
+    # Export necessary objects to the cluster
+    if(emulator=="klgp"){
+      clusterExport(cl, varlist=c("klgp", "cond", "eps", "pred.sepGP", "KL.Bnew", "FIGP.kernel.discrete", "pred.FIGP.XN", "dinvgamma", "logl.B", "logl.Yp", "ys_hat.KL", "U", "distance", "matern.kernel"))
+    }else{
+      clusterExport(cl, varlist=c("fem.figp", "cond", "eps", "pred.sepGP", "KL.Bnew", "FIGP.kernel.discrete", "pred.FIGP.XN", "dinvgamma", "logl.B", "logl.Yp", "ys_hat.KL", "U", "distance", "matern.kernel"))
     }
     
-    # sample s2: MH
-    s2.new <- exp(rnorm(1,0,cs2) + log(s2)) 
-    
-    logL <- logl.Yp(pred.out, s2, dU, yp) + log(dinvgamma(s2, prior.s2.shape, prior.s2.rate))
-    logL.new <- logl.Yp(pred.out.new, s2.new, dU.new, yp) + log(dinvgamma(s2.new, prior.s2.shape, prior.s2.rate))
-    
-    if(runif(1) <= exp(logL.new - logL)){
-      s2 <- s2.new
-      acceptCount.s2 <- acceptCount.s2 + 1
-    }
-    
-    # sample eta: MH
-    for(j in 1:2){
-      eta.new <- eta
-      eta.new[j] <- exp(rnorm(1,0,ceta[j]) + log(eta[j])) 
+    # Parallelized loop over jj
+    results <- parLapply(cl, 1:nchain, function(jj) {
+      # set up
+      g.sample <- matrix(0, nrow=MC.samples, ncol=n.grid)
+      yhat <- matrix(0, nrow=MC.samples, ncol=m)
+      eta.sample <- matrix(0, nrow=MC.samples, ncol=d)
+      tau2.sample <-  s2.sample <- rep(0, MC.samples)
       
-      logL <- logl.B(eta, tau2, XN, B, basis, nu, nug) + sum(log(dinvgamma(1/eta, prior.eta.shape, prior.eta.rate)))
-      logL.new <- logl.B(eta.new, tau2, XN, B, basis, nu, nug) + sum(log(dinvgamma(1/eta.new, prior.eta.shape, prior.eta.rate)))
+      eta <- eta.sample[1,] <- rep(rgamma(1, shape = prior.eta.shape, rate = prior.eta.rate), d)
+      tau2 <- tau2.sample[1] <- 1/rgamma(1, shape = prior.tau2.shape, rate = prior.tau2.rate)
+      s2 <- s2.sample[1] <- 1/rgamma(1, shape = prior.s2.shape, rate = prior.s2.rate)
       
-      if(runif(1) <= exp(logL.new - logL)){
+      S <- 0
+      for(i in 1:1000){
+        eta <- rgamma(2, shape = prior.eta.shape, rate = prior.eta.rate)
         R <- sqrt(distance(t(t(XN)/eta)))
-        K <- matern.kernel(R, nu=nu)
-        E.tmp <- t(basis) %*% K %*% basis
-        if(cond(E.tmp)<1e14){
-          eta <- eta.new
-          acceptCount.eta[j] <- acceptCount.eta[j] + 1
-          E <- E.tmp
-        }
+        S <- S + matern.kernel(R, nu=nu)/1000
       }
-    }
-    
-    # sample tau2
-    tau2.shape <- prior.tau2.shape + M/2
-    tau2.rate <- prior.tau2.rate + drop(t(B) %*% solve(E+diag(nug,M)) %*% B)/2
-    tau2 <- 1/rgamma(1, tau2.shape, tau2.rate)
-    
-    g.sample[,ii] <- drop(basis %*% B)
-    yhat[,ii] <- drop(U %*% diag(sqrt(pred.out$s2)) %*% t(U)) %*% rnorm(m) + pred.out$mean 
-    
-    if(plot.fg){
-      if (ii%%100 == 0){
-        par(mfrow=c(1,3))
-        image(matrix(yp,sqrt(m),sqrt(m)),col=heat.colors(12, rev = FALSE), main=expression({y^p}))
-        image(matrix(yhat[,ii],sqrt(m),sqrt(m)),col=heat.colors(12, rev = FALSE), main=bquote({y^s}(g[.(ii)])))
-        contour(matrix(yhat[,ii],sqrt(m),sqrt(m)), add = TRUE, nlevels = 5)
-        image(matrix(g.sample[,ii],sqrt(n.grid),sqrt(n.grid)),col=cm.colors(12, rev = FALSE), main=bquote(g[.(ii)]))
+      eig.out <- eigen(S)
+      M <- which(cumsum(eig.out$value)/sum(eig.out$value)>fraction)[1]
+      basis <- eig.out$vectors[,1:M]
+      R <- sqrt(distance(t(t(XN)/eta)))
+      K <- matern.kernel(R, nu=nu)
+      E <- t(basis) %*% K %*% basis
+      B <- t(mvtnorm::rmvnorm(1, mean = rep(0,M), sigma = tau2*(E+diag(nug,M))))
+      
+      yU <- yp %*% U
+      pred.out <- ys_hat.KL(klgp=klgp, B.new=B, basis=basis, U=U, emulator=emulator, figp=figp, XN=XN, Ki=Ki)
+      dU <- yU - pred.out$ynew
+      
+      if(!is.null(seed)){
+        set.seed(seed)
       }
-    }
-    
-    
-    if(ii <= MC.burnin){
-      if (ii%%100 == 0){
-        # cat("tau2=",tau2, "s2=",s2, "eta=",eta, "\n")
-        # cat("cGP=",cGP, "cs2=",cs2, "ceta=", ceta, "\n")
+      
+      ll.Yp <- logl.Yp(pred.out, s2, dU, yp) 
+      ll.B <- logl.B(eta, tau2, XN, B, basis, nu, nug)
+      
+      ##### MCMC sampling #####
+      for(ii in 1:MC.samples){
         
-        if (acceptCount.g/100 > 0.4){
-          cGP <- 5.75 * cGP
-        }else if(acceptCount.g/100 < 0.2){
-          cGP <- 0.25 * cGP
-        }
+        ### sample B using Elliptical Slice Sampling (ESS): this code follows the one in the `deepgp` package
+        B.prior <-  t(mvtnorm::rmvnorm(1, mean = rep(0,M), sigma = tau2*(E+diag(nug,M)))) 
         
-        if (acceptCount.s2/100 > 0.4){
-          cs2 <- 5.75 * cs2
-        }else if(acceptCount.s2/100 < 0.2){
-          cs2 <- 0.25 * cs2
-        }
+        # Initialize a and bounds on a
+        a <- runif(1, min = 0, max = 2 * pi)
+        amin <- a - 2 * pi
+        amax <- a
         
-        for(j in 1:2){
-          if (acceptCount.eta[j]/100 > 0.4){
-            ceta[j] <- 5.75 * ceta[j]
-          }else if(acceptCount.eta[j]/100 < 0.2){
-            ceta[j] <- 0.25 * ceta[j]
+        # Calculate proposed values, accept or reject, repeat if necessary
+        accept <- FALSE
+        count <- 0
+        ru <- runif(1)
+        
+        while (accept == FALSE) {
+          count <- count + 1
+          # sample gN: ESS
+          
+          B.new <-  B * cos(a) + B.prior * sin(a)
+          pred.out.new <- ys_hat.KL(klgp=klgp, B.new=B.new, basis=basis, U=U, emulator=emulator, figp=figp, XN=XN, Ki=Ki)
+          dU.new <- yU - pred.out.new$ynew
+          
+          logL <- ll.Yp + ll.B
+          
+          ll.Yp.new <- logl.Yp(pred.out.new, s2, dU.new, yp)
+          ll.B.new <- logl.B(eta, tau2, XN, B.new, basis, nu, nug)
+          logL.new <- ll.Yp.new + ll.B.new
+          
+          if(ru <= exp(logL.new - logL)){
+            B <- B.new
+            dU <- dU.new
+            ll.Yp <- ll.Yp.new
+            ll.B <- ll.B.new
+            pred.out <- pred.out.new
+            accept <- TRUE
+          }else {
+            # update the bounds on a and repeat
+            if (a < 0) {
+              amin <- a
+            } else {
+              amax <- a
+            }
+            a <- runif(1, amin, amax)
+            if (count > 100) stop("reached maximum iterations of ESS")
           }
         }
         
-        acceptCount.g <- acceptCount.s2 <- 0
-        acceptCount.eta <- c(0,0)
+        # sample s2: MH
+        l <- 1; u <- 2
+        
+        s2.new <- runif(1, min = l * s2 / u, max = u * s2 / l)
+        
+        logL <- ll.Yp + dinvgamma(s2, prior.s2.shape, prior.s2.rate, log = TRUE) - log(s2) + log(s2.new)
+        
+        ll.Yp.new <- logl.Yp(pred.out, s2.new, dU, yp)
+        logL.new <- ll.Yp.new + dinvgamma(s2.new, prior.s2.shape, prior.s2.rate, log = TRUE)
+        
+        if(runif(1) <= exp(logL.new - logL)){
+          s2 <- s2.new
+          ll.Yp <- ll.Yp.new
+        }
+        s2.sample[ii] <- s2
+        
+        # sample eta: MH
+        eta.new <- eta
+        for(j in 1:2){
+          eta.new[j] <- runif(1, min = l * eta[j] / u, max = u * eta[j] / l)
+          
+          logL <- ll.B + sum(dgamma(eta-eps, prior.eta.shape, prior.eta.rate, log = TRUE)) -
+            sum(log(eta)) + sum(log(eta.new))
+          ll.B.new <- logl.B(eta.new, tau2, XN, B, basis, nu, nug)
+          logL.new <- ll.B.new + sum(dgamma(eta.new-eps, prior.eta.shape, prior.eta.rate, log = TRUE))
+          
+          if(runif(1) <= exp(logL.new - logL)){
+            R <- sqrt(distance(t(t(XN)/eta.new)))
+            K <- matern.kernel(R, nu=nu)
+            E.tmp <- t(basis) %*% K %*% basis
+            if(cond(E.tmp)<1e14){
+              eta <- eta.new
+              E <- E.tmp
+              ll.B <- ll.B.new
+            }
+          }
+        }
+        eta.sample[ii,] <- eta
+        
+        # sample tau2
+        tau2.shape <- prior.tau2.shape + M/2
+        tau2.rate <- prior.tau2.rate + drop(t(B) %*% solve(E+diag(nug,M)) %*% B)/2
+        tau2 <- 1/rgamma(1, tau2.shape, tau2.rate)
+        tau2.sample[ii] <- tau2
+        ll.B <- logl.B(eta, tau2, XN, B, basis, nu, nug)
+        g.sample[ii,] <- drop(basis %*% B)
+        yhat[ii,] <- drop(U %*% diag(sqrt(pred.out$s2)) %*% t(U)) %*% rnorm(m) + pred.out$mean 
+        
       }
+      # At the end of each chain, return the necessary results
+      
+      return(list(g.sample = g.sample, yhat = yhat, tau2.sample = tau2.sample,
+                  eta.sample = eta.sample, s2.sample = s2.sample))
+    })
+    
+    # Stop the cluster after the computation is finished
+    stopCluster(cl)
+    
+    # Gather the results from all chains
+    g.ls <- lapply(results, function(x) x$g.sample)
+    yhat.ls <- lapply(results, function(x) x$yhat)
+    tau2.ls <- lapply(results, function(x) x$tau2.sample)
+    eta.ls <- lapply(results, function(x) x$eta.sample)
+    s2.ls <- lapply(results, function(x) x$s2.sample)
+    
+  }else{
+    
+    g.ls <- yhat.ls <- tau2.ls <- eta.ls <- s2.ls <- vector("list",nchain)
+    
+    for(jj in 1:nchain) {
+      
+      # set up
+      g.sample <- matrix(0, nrow=MC.samples, ncol=n.grid)
+      yhat <- matrix(0, nrow=MC.samples, ncol=m)
+      eta.sample <- matrix(0, nrow=MC.samples, ncol=d)
+      tau2.sample <-  s2.sample <- rep(0, MC.samples)
+      
+      eta <- eta.sample[1,] <- rep(rgamma(1, shape = prior.eta.shape, rate = prior.eta.rate), d)
+      tau2 <- tau2.sample[1] <- 1/rgamma(1, shape = prior.tau2.shape, rate = prior.tau2.rate)
+      s2 <- s2.sample[1] <- 1/rgamma(1, shape = prior.s2.shape, rate = prior.s2.rate)
+      
+      
+      S <- 0
+      for(i in 1:1000){
+        eta <- rgamma(2, shape = prior.eta.shape, rate = prior.eta.rate)
+        R <- sqrt(distance(t(t(XN)/eta)))
+        S <- S + matern.kernel(R, nu=nu)/1000
+      }
+      eig.out <- eigen(S)
+      M <- which(cumsum(eig.out$value)/sum(eig.out$value)>fraction)[1]
+      basis <- eig.out$vectors[,1:M]
+      R <- sqrt(distance(t(t(XN)/eta)))
+      K <- matern.kernel(R, nu=nu)
+      E <- t(basis) %*% K %*% basis
+      B <- t(mvtnorm::rmvnorm(1, mean = rep(0,M), sigma = tau2*(E+diag(nug,M))))
+      
+      yU <- yp %*% U
+      pred.out <- ys_hat.KL(klgp=klgp, B.new=B, basis=basis, U=U, emulator=emulator, figp=figp, XN=XN, Ki=Ki)
+      dU <- yU - pred.out$ynew
+      
+      if(!is.null(seed)){
+        set.seed(seed)
+      }
+      
+      ll.Yp <- logl.Yp(pred.out, s2, dU, yp) 
+      ll.B <- logl.B(eta, tau2, XN, B, basis, nu, nug)
+      
+      ##### MCMC sampling #####
+      for(ii in 1:MC.samples){
+        
+        ### sample B using Elliptical Slice Sampling (ESS): this code follows the one in the `deepgp` package
+        B.prior <-  t(mvtnorm::rmvnorm(1, mean = rep(0,M), sigma = tau2*(E+diag(nug,M)))) 
+        
+        # Initialize a and bounds on a
+        a <- runif(1, min = 0, max = 2 * pi)
+        amin <- a - 2 * pi
+        amax <- a
+        
+        # Calculate proposed values, accept or reject, repeat if necessary
+        accept <- FALSE
+        count <- 0
+        ru <- runif(1)
+        
+        while (accept == FALSE) {
+          count <- count + 1
+          # sample gN: ESS
+          
+          B.new <-  B * cos(a) + B.prior * sin(a)
+          pred.out.new <- ys_hat.KL(klgp=klgp, B.new=B.new, basis=basis, U=U, emulator=emulator, figp=figp, XN=XN, Ki=Ki)
+          dU.new <- yU - pred.out.new$ynew
+          
+          logL <- ll.Yp + ll.B
+          
+          ll.Yp.new <- logl.Yp(pred.out.new, s2, dU.new, yp)
+          ll.B.new <- logl.B(eta, tau2, XN, B.new, basis, nu, nug)
+          logL.new <- ll.Yp.new + ll.B.new
+          
+          if(ru <= exp(logL.new - logL)){
+            B <- B.new
+            dU <- dU.new
+            ll.Yp <- ll.Yp.new
+            ll.B <- ll.B.new
+            pred.out <- pred.out.new
+            accept <- TRUE
+          }else {
+            # update the bounds on a and repeat
+            if (a < 0) {
+              amin <- a
+            } else {
+              amax <- a
+            }
+            a <- runif(1, amin, amax)
+            if (count > 100) stop("reached maximum iterations of ESS")
+          }
+        }
+        
+        # sample s2: MH
+        l <- 1; u <- 2
+        
+        s2.new <- runif(1, min = l * s2 / u, max = u * s2 / l)
+        
+        logL <- ll.Yp + dinvgamma(s2, prior.s2.shape, prior.s2.rate, log = TRUE) - log(s2) + log(s2.new)
+        
+        ll.Yp.new <- logl.Yp(pred.out, s2.new, dU, yp)
+        logL.new <- ll.Yp.new + dinvgamma(s2.new, prior.s2.shape, prior.s2.rate, log = TRUE)
+        
+        if(runif(1) <= exp(logL.new - logL)){
+          s2 <- s2.new
+          ll.Yp <- ll.Yp.new
+        }
+        s2.sample[ii] <- s2
+        
+        # sample eta: MH
+        eta.new <- eta
+        for(j in 1:2){
+          eta.new[j] <- runif(1, min = l * eta[j] / u, max = u * eta[j] / l)
+          
+          logL <- ll.B + sum(dgamma(eta-eps, prior.eta.shape, prior.eta.rate, log = TRUE)) -
+            sum(log(eta)) + sum(log(eta.new))
+          ll.B.new <- logl.B(eta.new, tau2, XN, B, basis, nu, nug)
+          logL.new <- ll.B.new + sum(dgamma(eta.new-eps, prior.eta.shape, prior.eta.rate, log = TRUE))
+          
+          if(runif(1) <= exp(logL.new - logL)){
+            R <- sqrt(distance(t(t(XN)/eta.new)))
+            K <- matern.kernel(R, nu=nu)
+            E.tmp <- t(basis) %*% K %*% basis
+            if(cond(E.tmp)<1e14){
+              eta <- eta.new
+              E <- E.tmp
+              ll.B <- ll.B.new
+            }
+          }
+        }
+        eta.sample[ii,] <- eta
+        
+        
+        # sample tau2
+        tau2.shape <- prior.tau2.shape + M/2
+        tau2.rate <- prior.tau2.rate + drop(t(B) %*% solve(E+diag(nug,M)) %*% B)/2
+        tau2 <- 1/rgamma(1, tau2.shape, tau2.rate)
+        tau2.sample[ii] <- tau2
+        ll.B <- logl.B(eta, tau2, XN, B, basis, nu, nug)
+        g.sample[ii,] <- drop(basis %*% B)
+        yhat[ii,] <- drop(U %*% diag(sqrt(pred.out$s2)) %*% t(U) %*% rnorm(m) + pred.out$mean) 
+
+      }
+      g.ls[[jj]] <- g.sample
+      yhat.ls[[jj]] <- yhat
+      tau2.ls[[jj]] <- tau2.sample
+      eta.ls[[jj]] <- eta.sample
+      s2.ls[[jj]] <- s2.sample
     }
   }
   
-  if(trace){
-    setTxtProgressBar(pb, MC.samples)
-    close(pb)
-  }
-
+  g.ls <- lapply(g.ls, FUN=function(x) x[(MC.burnin+1):MC.samples, ])
+  yhat.ls <- lapply(yhat.ls, FUN=function(x) x[(MC.burnin+1):MC.samples, ])
+  tau2.ls <- lapply(tau2.ls, FUN=function(x) x[(MC.burnin+1):MC.samples])
+  eta.ls <- lapply(eta.ls, FUN=function(x) x[(MC.burnin+1):MC.samples, ])
+  s2.ls <- lapply(s2.ls, FUN=function(x) x[(MC.burnin+1):MC.samples])
   
-  return(list(g.sample=g.sample, yhat=yhat))
+  return(list(g.inverse=g.ls, yhat=yhat.ls, tau2=tau2.ls, eta=eta.ls, s2=s2.ls))
 }
